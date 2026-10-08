@@ -1,62 +1,227 @@
-name: Build Windows MediaPipe DLL
+name: Build Windows MediaPipe
 
 on:
   push:
-    branches: [ "main" ]
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
   build-windows:
-    runs-on: windows-latest
+    runs-on: windows-2022
 
     steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v4
+      # ------------------------------------------------------------
+      # 1. Checkout your repository
+      # ------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.10'
+      # ------------------------------------------------------------
+      # 2. Python
+      # ------------------------------------------------------------
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-    - name: Install Bazelisk and MSYS2
-      run: |
-        choco install bazelisk -y
-        bazel --version
+      - name: Install Python dependencies
+        shell: powershell
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy
 
-    - name: Clone MediaPipe Repo
-      run: |
-        git clone --depth 1 https://github.com/google-ai-edge/mediapipe.git
+      # ------------------------------------------------------------
+      # 3. MSYS2
+      # ------------------------------------------------------------
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            git
+            patch
+            diffutils
+            make
 
-    # Disable rules_swift in WORKSPACE so Bazel never invokes swift_autoconfiguration
-    - name: Strip Swift Dependencies
-      shell: bash
-      run: |
-        cd mediapipe
-        # Comment out rules_swift in WORKSPACE if present
-        sed -i 's/.*rules_swift.*/# rules_swift disabled/g' WORKSPACE || true
-        # Prevent Bzlmod / WORKSPACE from resolving rules_swift toolchains
-        echo "build --extra_toolchains=" >> .bazelrc
+      # ------------------------------------------------------------
+      # 4. Bazelisk
+      # ------------------------------------------------------------
+      - name: Install Bazelisk
+        shell: powershell
+        run: |
+          choco install bazelisk -y
 
-    - name: Build MediaPipe DLL Target
-      shell: cmd
-      run: |
-        cd mediapipe
-        set BAZEL_SH=C:\msys64\usr\bin\bash.exe
-        set BAZEL_VC=C:\Program Files\Microsoft Visual Studio\2022\Community\VC
-        
-        bazel build -c opt ^
-          --define MEDIAPIPE_DISABLE_GPU=1 ^
-          --override_repository=build_bazel_rules_swift_local_config=C:/dummy_repo ^
-          --enable_runfiles ^
-          --features=compiler_param_file ^
-          //mediapipe/examples/desktop/hand_tracking:hand_tracking_cpu
+          Write-Host "Bazel version:"
+          bazel --version
 
-    - name: Upload Build Artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: mediapipe-windows-binaries
-        path: |
-          mediapipe/bazel-bin/**/*.dll
-          mediapipe/bazel-bin/**/*.lib
-          mediapipe/bazel-bin/**/*.exe
-        retention-days: 14
+      # ------------------------------------------------------------
+      # 5. Install Swift
+      #
+      # rules_swift requires swiftc.exe on Windows.
+      # ------------------------------------------------------------
+      - name: Install Swift
+        shell: powershell
+        run: |
+          choco install swift -y
+
+          refreshenv
+
+          Write-Host "Searching for swiftc.exe..."
+
+          $swiftc = Get-ChildItem `
+            -Path "C:\Program Files", "C:\Swift", "C:\Library" `
+            -Filter "swiftc.exe" `
+            -Recurse `
+            -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+
+          if (-not $swiftc) {
+            Write-Error "swiftc.exe was not found."
+            exit 1
+          }
+
+          Write-Host "Found Swift:"
+          Write-Host $swiftc.FullName
+
+          $swiftBin = $swiftc.Directory.FullName
+
+          Write-Host "Swift bin:"
+          Write-Host $swiftBin
+
+          echo "$swiftBin" >> $env:GITHUB_PATH
+
+      # ------------------------------------------------------------
+      # 6. Verify Swift
+      # ------------------------------------------------------------
+      - name: Verify Swift
+        shell: powershell
+        run: |
+          refreshenv
+
+          where.exe swiftc
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "swiftc.exe is not in PATH."
+            exit 1
+          }
+
+          swiftc --version
+
+      # ------------------------------------------------------------
+      # 7. Clone MediaPipe
+      #
+      # v0.10.21 is a known MediaPipe Windows-era release.
+      # ------------------------------------------------------------
+      - name: Clone MediaPipe
+        shell: powershell
+        run: |
+          git clone --depth 1 --branch v0.10.21 `
+            https://github.com/google-ai-edge/mediapipe.git
+
+      # ------------------------------------------------------------
+      # 8. Configure Bazel environment
+      # ------------------------------------------------------------
+      - name: Configure Bazel
+        shell: powershell
+        run: |
+          echo "BAZEL_SH=C:\msys64\usr\bin\bash.exe" >> $env:GITHUB_ENV
+
+          $vsPaths = @(
+            "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC",
+            "C:\Program Files\Microsoft Visual Studio\2022\Professional\VC",
+            "C:\Program Files\Microsoft Visual Studio\2022\Community\VC"
+          )
+
+          foreach ($path in $vsPaths) {
+            if (Test-Path $path) {
+              Write-Host "Using Visual C++ toolchain:"
+              Write-Host $path
+              echo "BAZEL_VC=$path" >> $env:GITHUB_ENV
+              break
+            }
+          }
+
+      # ------------------------------------------------------------
+      # 9. Verify build tools
+      # ------------------------------------------------------------
+      - name: Verify build environment
+        shell: powershell
+        run: |
+          Write-Host "Python:"
+          python --version
+
+          Write-Host ""
+          Write-Host "Bazel:"
+          bazel --version
+
+          Write-Host ""
+          Write-Host "Swift:"
+          swiftc --version
+
+          Write-Host ""
+          Write-Host "MSYS2:"
+          if (-not (Test-Path "C:\msys64\usr\bin\bash.exe")) {
+            Write-Error "MSYS2 bash.exe not found."
+            exit 1
+          }
+
+          Write-Host "MSYS2 OK"
+
+      # ------------------------------------------------------------
+      # 10. Build MediaPipe Hand Tracking CPU
+      # ------------------------------------------------------------
+      - name: Build MediaPipe Hand Tracking CPU
+        shell: cmd
+        working-directory: mediapipe
+        run: |
+          bazel build ^
+            -c opt ^
+            --define MEDIAPIPE_DISABLE_GPU=1 ^
+            --action_env=PYTHON_BIN_PATH=C:\hostedtoolcache\windows\Python\3.11.0\x64\python.exe ^
+            --shell_executable=C:\msys64\usr\bin\bash.exe ^
+            //mediapipe/examples/desktop/hand_tracking:hand_tracking_cpu
+
+      # ------------------------------------------------------------
+      # 11. Show generated files
+      # ------------------------------------------------------------
+      - name: List build output
+        shell: powershell
+        run: |
+          Write-Host "===== EXE ====="
+          Get-ChildItem `
+            "mediapipe\bazel-bin" `
+            -Recurse `
+            -Filter "*.exe" `
+            -ErrorAction SilentlyContinue
+
+          Write-Host ""
+          Write-Host "===== DLL ====="
+          Get-ChildItem `
+            "mediapipe\bazel-bin" `
+            -Recurse `
+            -Filter "*.dll" `
+            -ErrorAction SilentlyContinue
+
+          Write-Host ""
+          Write-Host "===== LIB ====="
+          Get-ChildItem `
+            "mediapipe\bazel-bin" `
+            -Recurse `
+            -Filter "*.lib" `
+            -ErrorAction SilentlyContinue
+
+      # ------------------------------------------------------------
+      # 12. Upload binaries
+      # ------------------------------------------------------------
+      - name: Upload MediaPipe binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: mediapipe-windows-hand-tracking
+          path: |
+            mediapipe/bazel-bin/**/*.exe
+            mediapipe/bazel-bin/**/*.dll
+            mediapipe/bazel-bin/**/*.lib
+          if-no-files-found: warn
+          retention-days: 14
