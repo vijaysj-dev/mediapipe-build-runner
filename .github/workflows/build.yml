@@ -12,25 +12,25 @@ jobs:
 
     steps:
 
-      # ---------------------------------------------------------
+      # --------------------------------------------------
       # Checkout
-      # ---------------------------------------------------------
-      - name: Checkout repository
+      # --------------------------------------------------
+      - name: Checkout
         uses: actions/checkout@v4
 
 
-      # ---------------------------------------------------------
+      # --------------------------------------------------
       # Python
-      # ---------------------------------------------------------
+      # --------------------------------------------------
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
 
-      # ---------------------------------------------------------
+      # --------------------------------------------------
       # MSYS2
-      # ---------------------------------------------------------
+      # --------------------------------------------------
       - name: Setup MSYS2
         uses: msys2/setup-msys2@v2
         with:
@@ -38,154 +38,69 @@ jobs:
           update: true
           install: >-
             git
-            make
             patch
-            diffutils
+            unzip
 
 
-      # ---------------------------------------------------------
+      # --------------------------------------------------
       # Bazelisk
-      # ---------------------------------------------------------
+      # --------------------------------------------------
       - name: Install Bazelisk
         shell: powershell
         run: |
           choco install bazelisk -y
-
-          Write-Host "Bazel version:"
           bazel --version
 
 
-      # ---------------------------------------------------------
-      # Install official Swift for Windows
-      # ---------------------------------------------------------
-      - name: Install Swift
-        shell: powershell
-        run: |
-
-          $swiftUrl = "https://download.swift.org/swift-6.3.3-release/windows10/swift-6.3.3-RELEASE/swift-6.3.3-RELEASE-windows10.exe"
-
-          $installer = "$env:RUNNER_TEMP\swift-installer.exe"
-
-          Write-Host "Downloading Swift..."
-          Invoke-WebRequest `
-            -Uri $swiftUrl `
-            -OutFile $installer
-
-          if (-not (Test-Path $installer)) {
-            Write-Error "Swift installer was not downloaded."
-            exit 1
-          }
-
-          Write-Host "Installing Swift..."
-          Start-Process `
-            -FilePath $installer `
-            -ArgumentList "/quiet", "/install" `
-            -Wait `
-            -NoNewWindow
-
-          Write-Host "Swift installation completed."
-
-
-      # ---------------------------------------------------------
-      # Locate Swift compiler
-      # ---------------------------------------------------------
-      - name: Locate Swift compiler
-        shell: powershell
-        run: |
-
-          Write-Host "Searching for swiftc.exe..."
-
-          $locations = @(
-            "$env:ProgramFiles\Swift",
-            "$env:ProgramFiles\Swift\Toolchains",
-            "$env:LOCALAPPDATA\Programs\Swift"
-          )
-
-          $swiftc = $null
-
-          foreach ($location in $locations) {
-
-            if (Test-Path $location) {
-
-              $swiftc = Get-ChildItem `
-                -Path $location `
-                -Filter "swiftc.exe" `
-                -Recurse `
-                -ErrorAction SilentlyContinue |
-                Select-Object -First 1
-
-              if ($swiftc) {
-                break
-              }
-            }
-          }
-
-          if (-not $swiftc) {
-            Write-Host ""
-            Write-Host "Swift installation directory:"
-            Get-ChildItem "$env:ProgramFiles\Swift" `
-              -Recurse `
-              -ErrorAction SilentlyContinue |
-              Select-Object -First 100
-
-            Write-Error "swiftc.exe was not found."
-            exit 1
-          }
-
-          Write-Host "Found swiftc:"
-          Write-Host $swiftc.FullName
-
-          $swiftBin = $swiftc.Directory.FullName
-
-          Write-Host "Swift bin:"
-          Write-Host $swiftBin
-
-          # Add Swift compiler to the PATH of subsequent steps
-          echo "$swiftBin" >> $env:GITHUB_PATH
-
-
-      # ---------------------------------------------------------
-      # Verify Swift
-      # ---------------------------------------------------------
-      - name: Verify Swift
-        shell: powershell
-        run: |
-
-          Write-Host "PATH:"
-          $env:PATH
-
-          Write-Host ""
-          Write-Host "swiftc location:"
-
-          where.exe swiftc
-
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "swiftc.exe is not in PATH."
-            exit 1
-          }
-
-          Write-Host ""
-          Write-Host "Swift version:"
-
-          swiftc --version
-
-
-      # ---------------------------------------------------------
+      # --------------------------------------------------
       # Clone MediaPipe
-      # ---------------------------------------------------------
+      # --------------------------------------------------
       - name: Clone MediaPipe
         shell: powershell
         run: |
-
           git clone `
             --depth 1 `
             --branch v0.10.21 `
             https://github.com/google-ai-edge/mediapipe.git
 
 
-      # ---------------------------------------------------------
-      # Configure Bazel environment
-      # ---------------------------------------------------------
+      # --------------------------------------------------
+      # Disable Bzlmod
+      # --------------------------------------------------
+      - name: Disable Bzlmod
+        shell: powershell
+        working-directory: mediapipe
+        run: |
+
+          Write-Host "Creating .bazelrc.local"
+
+          @"
+          common --noenable_bzlmod
+          common --enable_workspace
+          "@ | Out-File `
+            -FilePath ".bazelrc.local" `
+            -Encoding ascii
+
+
+      # --------------------------------------------------
+      # Verify MediaPipe configuration
+      # --------------------------------------------------
+      - name: Check MediaPipe
+        shell: powershell
+        working-directory: mediapipe
+        run: |
+
+          Write-Host "MediaPipe commit:"
+          git rev-parse HEAD
+
+          Write-Host ""
+          Write-Host "Bazel configuration:"
+          Get-Content .bazelrc.local
+
+
+      # --------------------------------------------------
+      # Configure Bazel
+      # --------------------------------------------------
       - name: Configure Bazel environment
         shell: powershell
         run: |
@@ -198,69 +113,24 @@ jobs:
             "C:\Program Files\Microsoft Visual Studio\2022\Community\VC"
           )
 
-          $found = $false
-
           foreach ($path in $vsPaths) {
 
             if (Test-Path $path) {
 
-              Write-Host "Visual C++ toolchain found:"
+              Write-Host "Using:"
               Write-Host $path
 
               echo "BAZEL_VC=$path" >> $env:GITHUB_ENV
 
-              $found = $true
               break
             }
           }
 
-          if (-not $found) {
-            Write-Error "Visual Studio C++ toolchain was not found."
-            exit 1
-          }
 
-
-      # ---------------------------------------------------------
-      # Verify build environment
-      # ---------------------------------------------------------
-      - name: Verify build environment
-        shell: powershell
-        run: |
-
-          Write-Host "=============================="
-          Write-Host "Python"
-          Write-Host "=============================="
-          python --version
-
-          Write-Host ""
-          Write-Host "=============================="
-          Write-Host "Bazel"
-          Write-Host "=============================="
-          bazel --version
-
-          Write-Host ""
-          Write-Host "=============================="
-          Write-Host "Swift"
-          Write-Host "=============================="
-          swiftc --version
-
-          Write-Host ""
-          Write-Host "=============================="
-          Write-Host "MSYS2"
-          Write-Host "=============================="
-
-          if (-not (Test-Path "C:\msys64\usr\bin\bash.exe")) {
-            Write-Error "MSYS2 bash.exe was not found."
-            exit 1
-          }
-
-          Write-Host "MSYS2 OK"
-
-
-      # ---------------------------------------------------------
-      # Build MediaPipe Hand Tracking
-      # ---------------------------------------------------------
-      - name: Build MediaPipe Hand Tracking CPU
+      # --------------------------------------------------
+      # Build
+      # --------------------------------------------------
+      - name: Build Hand Tracking CPU
         shell: cmd
         working-directory: mediapipe
         run: |
@@ -268,58 +138,52 @@ jobs:
           bazel build ^
             -c opt ^
             --define MEDIAPIPE_DISABLE_GPU=1 ^
-            --enable_runfiles ^
-            --features=compiler_param_file ^
+            --action_env=PYTHON_BIN_PATH=%pythonLocation%\python.exe ^
+            --shell_executable=C:\msys64\usr\bin\bash.exe ^
+            --verbose_failures ^
             //mediapipe/examples/desktop/hand_tracking:hand_tracking_cpu
 
 
-      # ---------------------------------------------------------
-      # Show output
-      # ---------------------------------------------------------
-      - name: Show build output
+      # --------------------------------------------------
+      # List output
+      # --------------------------------------------------
+      - name: List binaries
         shell: powershell
         run: |
 
-          Write-Host ""
-          Write-Host "=============================="
-          Write-Host "EXE"
-          Write-Host "=============================="
+          Write-Host "=== EXE ==="
 
           Get-ChildItem `
-            "mediapipe\bazel-bin" `
+            mediapipe\bazel-bin `
             -Recurse `
             -Filter "*.exe" `
             -ErrorAction SilentlyContinue
 
 
           Write-Host ""
-          Write-Host "=============================="
-          Write-Host "DLL"
-          Write-Host "=============================="
+          Write-Host "=== DLL ==="
 
           Get-ChildItem `
-            "mediapipe\bazel-bin" `
+            mediapipe\bazel-bin `
             -Recurse `
             -Filter "*.dll" `
             -ErrorAction SilentlyContinue
 
 
           Write-Host ""
-          Write-Host "=============================="
-          Write-Host "LIB"
-          Write-Host "=============================="
+          Write-Host "=== LIB ==="
 
           Get-ChildItem `
-            "mediapipe\bazel-bin" `
+            mediapipe\bazel-bin `
             -Recurse `
             -Filter "*.lib" `
             -ErrorAction SilentlyContinue
 
 
-      # ---------------------------------------------------------
-      # Upload artifacts
-      # ---------------------------------------------------------
-      - name: Upload MediaPipe binaries
+      # --------------------------------------------------
+      # Upload
+      # --------------------------------------------------
+      - name: Upload binaries
         uses: actions/upload-artifact@v4
         with:
           name: mediapipe-windows-hand-tracking
