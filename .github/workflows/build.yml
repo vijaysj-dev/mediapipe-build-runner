@@ -11,29 +11,26 @@ jobs:
     runs-on: windows-2022
 
     steps:
-      # ------------------------------------------------------------
-      # 1. Checkout your repository
-      # ------------------------------------------------------------
+
+      # ---------------------------------------------------------
+      # Checkout
+      # ---------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ------------------------------------------------------------
-      # 2. Python
-      # ------------------------------------------------------------
+
+      # ---------------------------------------------------------
+      # Python
+      # ---------------------------------------------------------
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.10"
 
-      - name: Install Python dependencies
-        shell: powershell
-        run: |
-          python -m pip install --upgrade pip
-          pip install numpy
 
-      # ------------------------------------------------------------
-      # 3. MSYS2
-      # ------------------------------------------------------------
+      # ---------------------------------------------------------
+      # MSYS2
+      # ---------------------------------------------------------
       - name: Setup MSYS2
         uses: msys2/setup-msys2@v2
         with:
@@ -41,13 +38,14 @@ jobs:
           update: true
           install: >-
             git
+            make
             patch
             diffutils
-            make
 
-      # ------------------------------------------------------------
-      # 4. Bazelisk
-      # ------------------------------------------------------------
+
+      # ---------------------------------------------------------
+      # Bazelisk
+      # ---------------------------------------------------------
       - name: Install Bazelisk
         shell: powershell
         run: |
@@ -56,33 +54,85 @@ jobs:
           Write-Host "Bazel version:"
           bazel --version
 
-      # ------------------------------------------------------------
-      # 5. Install Swift
-      #
-      # rules_swift requires swiftc.exe on Windows.
-      # ------------------------------------------------------------
+
+      # ---------------------------------------------------------
+      # Install official Swift for Windows
+      # ---------------------------------------------------------
       - name: Install Swift
         shell: powershell
         run: |
-          choco install swift -y
 
-          refreshenv
+          $swiftUrl = "https://download.swift.org/swift-6.3.3-release/windows10/swift-6.3.3-RELEASE/swift-6.3.3-RELEASE-windows10.exe"
+
+          $installer = "$env:RUNNER_TEMP\swift-installer.exe"
+
+          Write-Host "Downloading Swift..."
+          Invoke-WebRequest `
+            -Uri $swiftUrl `
+            -OutFile $installer
+
+          if (-not (Test-Path $installer)) {
+            Write-Error "Swift installer was not downloaded."
+            exit 1
+          }
+
+          Write-Host "Installing Swift..."
+          Start-Process `
+            -FilePath $installer `
+            -ArgumentList "/quiet", "/install" `
+            -Wait `
+            -NoNewWindow
+
+          Write-Host "Swift installation completed."
+
+
+      # ---------------------------------------------------------
+      # Locate Swift compiler
+      # ---------------------------------------------------------
+      - name: Locate Swift compiler
+        shell: powershell
+        run: |
 
           Write-Host "Searching for swiftc.exe..."
 
-          $swiftc = Get-ChildItem `
-            -Path "C:\Program Files", "C:\Swift", "C:\Library" `
-            -Filter "swiftc.exe" `
-            -Recurse `
-            -ErrorAction SilentlyContinue |
-            Select-Object -First 1
+          $locations = @(
+            "$env:ProgramFiles\Swift",
+            "$env:ProgramFiles\Swift\Toolchains",
+            "$env:LOCALAPPDATA\Programs\Swift"
+          )
+
+          $swiftc = $null
+
+          foreach ($location in $locations) {
+
+            if (Test-Path $location) {
+
+              $swiftc = Get-ChildItem `
+                -Path $location `
+                -Filter "swiftc.exe" `
+                -Recurse `
+                -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+
+              if ($swiftc) {
+                break
+              }
+            }
+          }
 
           if (-not $swiftc) {
+            Write-Host ""
+            Write-Host "Swift installation directory:"
+            Get-ChildItem "$env:ProgramFiles\Swift" `
+              -Recurse `
+              -ErrorAction SilentlyContinue |
+              Select-Object -First 100
+
             Write-Error "swiftc.exe was not found."
             exit 1
           }
 
-          Write-Host "Found Swift:"
+          Write-Host "Found swiftc:"
           Write-Host $swiftc.FullName
 
           $swiftBin = $swiftc.Directory.FullName
@@ -90,15 +140,22 @@ jobs:
           Write-Host "Swift bin:"
           Write-Host $swiftBin
 
+          # Add Swift compiler to the PATH of subsequent steps
           echo "$swiftBin" >> $env:GITHUB_PATH
 
-      # ------------------------------------------------------------
-      # 6. Verify Swift
-      # ------------------------------------------------------------
+
+      # ---------------------------------------------------------
+      # Verify Swift
+      # ---------------------------------------------------------
       - name: Verify Swift
         shell: powershell
         run: |
-          refreshenv
+
+          Write-Host "PATH:"
+          $env:PATH
+
+          Write-Host ""
+          Write-Host "swiftc location:"
 
           where.exe swiftc
 
@@ -107,25 +164,32 @@ jobs:
             exit 1
           }
 
+          Write-Host ""
+          Write-Host "Swift version:"
+
           swiftc --version
 
-      # ------------------------------------------------------------
-      # 7. Clone MediaPipe
-      #
-      # v0.10.21 is a known MediaPipe Windows-era release.
-      # ------------------------------------------------------------
+
+      # ---------------------------------------------------------
+      # Clone MediaPipe
+      # ---------------------------------------------------------
       - name: Clone MediaPipe
         shell: powershell
         run: |
-          git clone --depth 1 --branch v0.10.21 `
+
+          git clone `
+            --depth 1 `
+            --branch v0.10.21 `
             https://github.com/google-ai-edge/mediapipe.git
 
-      # ------------------------------------------------------------
-      # 8. Configure Bazel environment
-      # ------------------------------------------------------------
-      - name: Configure Bazel
+
+      # ---------------------------------------------------------
+      # Configure Bazel environment
+      # ---------------------------------------------------------
+      - name: Configure Bazel environment
         shell: powershell
         run: |
+
           echo "BAZEL_SH=C:\msys64\usr\bin\bash.exe" >> $env:GITHUB_ENV
 
           $vsPaths = @(
@@ -134,87 +198,127 @@ jobs:
             "C:\Program Files\Microsoft Visual Studio\2022\Community\VC"
           )
 
+          $found = $false
+
           foreach ($path in $vsPaths) {
+
             if (Test-Path $path) {
-              Write-Host "Using Visual C++ toolchain:"
+
+              Write-Host "Visual C++ toolchain found:"
               Write-Host $path
+
               echo "BAZEL_VC=$path" >> $env:GITHUB_ENV
+
+              $found = $true
               break
             }
           }
 
-      # ------------------------------------------------------------
-      # 9. Verify build tools
-      # ------------------------------------------------------------
+          if (-not $found) {
+            Write-Error "Visual Studio C++ toolchain was not found."
+            exit 1
+          }
+
+
+      # ---------------------------------------------------------
+      # Verify build environment
+      # ---------------------------------------------------------
       - name: Verify build environment
         shell: powershell
         run: |
-          Write-Host "Python:"
+
+          Write-Host "=============================="
+          Write-Host "Python"
+          Write-Host "=============================="
           python --version
 
           Write-Host ""
-          Write-Host "Bazel:"
+          Write-Host "=============================="
+          Write-Host "Bazel"
+          Write-Host "=============================="
           bazel --version
 
           Write-Host ""
-          Write-Host "Swift:"
+          Write-Host "=============================="
+          Write-Host "Swift"
+          Write-Host "=============================="
           swiftc --version
 
           Write-Host ""
-          Write-Host "MSYS2:"
+          Write-Host "=============================="
+          Write-Host "MSYS2"
+          Write-Host "=============================="
+
           if (-not (Test-Path "C:\msys64\usr\bin\bash.exe")) {
-            Write-Error "MSYS2 bash.exe not found."
+            Write-Error "MSYS2 bash.exe was not found."
             exit 1
           }
 
           Write-Host "MSYS2 OK"
 
-      # ------------------------------------------------------------
-      # 10. Build MediaPipe Hand Tracking CPU
-      # ------------------------------------------------------------
+
+      # ---------------------------------------------------------
+      # Build MediaPipe Hand Tracking
+      # ---------------------------------------------------------
       - name: Build MediaPipe Hand Tracking CPU
         shell: cmd
         working-directory: mediapipe
         run: |
+
           bazel build ^
             -c opt ^
             --define MEDIAPIPE_DISABLE_GPU=1 ^
-            --action_env=PYTHON_BIN_PATH=C:\hostedtoolcache\windows\Python\3.11.0\x64\python.exe ^
-            --shell_executable=C:\msys64\usr\bin\bash.exe ^
+            --enable_runfiles ^
+            --features=compiler_param_file ^
             //mediapipe/examples/desktop/hand_tracking:hand_tracking_cpu
 
-      # ------------------------------------------------------------
-      # 11. Show generated files
-      # ------------------------------------------------------------
-      - name: List build output
+
+      # ---------------------------------------------------------
+      # Show output
+      # ---------------------------------------------------------
+      - name: Show build output
         shell: powershell
         run: |
-          Write-Host "===== EXE ====="
+
+          Write-Host ""
+          Write-Host "=============================="
+          Write-Host "EXE"
+          Write-Host "=============================="
+
           Get-ChildItem `
             "mediapipe\bazel-bin" `
             -Recurse `
             -Filter "*.exe" `
             -ErrorAction SilentlyContinue
 
+
           Write-Host ""
-          Write-Host "===== DLL ====="
+          Write-Host "=============================="
+          Write-Host "DLL"
+          Write-Host "=============================="
+
           Get-ChildItem `
             "mediapipe\bazel-bin" `
             -Recurse `
             -Filter "*.dll" `
             -ErrorAction SilentlyContinue
 
+
           Write-Host ""
-          Write-Host "===== LIB ====="
+          Write-Host "=============================="
+          Write-Host "LIB"
+          Write-Host "=============================="
+
           Get-ChildItem `
             "mediapipe\bazel-bin" `
             -Recurse `
             -Filter "*.lib" `
             -ErrorAction SilentlyContinue
 
-      # ------------------------------------------------------------
-      # 12. Upload binaries
-      # ------------------------------------------------------------
+
+      # ---------------------------------------------------------
+      # Upload artifacts
+      # ---------------------------------------------------------
       - name: Upload MediaPipe binaries
         uses: actions/upload-artifact@v4
         with:
