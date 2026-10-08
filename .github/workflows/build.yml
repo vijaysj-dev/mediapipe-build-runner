@@ -23,17 +23,19 @@ jobs:
         choco install bazelisk -y
         bazel --version
 
-    # Bypass the rules_swift check by putting a dummy swiftc.exe in PATH
-    - name: Bypass Swift Autoconfig
-      shell: cmd
-      run: |
-        mkdir C:\dummy_swift
-        type nul > C:\dummy_swift\swiftc.exe
-        echo C:\dummy_swift>> %GITHUB_PATH%
-
     - name: Clone MediaPipe Repo
       run: |
         git clone --depth 1 https://github.com/google-ai-edge/mediapipe.git
+
+    # Disable rules_swift in WORKSPACE so Bazel never invokes swift_autoconfiguration
+    - name: Strip Swift Dependencies
+      shell: bash
+      run: |
+        cd mediapipe
+        # Comment out rules_swift in WORKSPACE if present
+        sed -i 's/.*rules_swift.*/# rules_swift disabled/g' WORKSPACE || true
+        # Prevent Bzlmod / WORKSPACE from resolving rules_swift toolchains
+        echo "build --extra_toolchains=" >> .bazelrc
 
     - name: Build MediaPipe DLL Target
       shell: cmd
@@ -44,6 +46,7 @@ jobs:
         
         bazel build -c opt ^
           --define MEDIAPIPE_DISABLE_GPU=1 ^
+          --override_repository=build_bazel_rules_swift_local_config=C:/dummy_repo ^
           --enable_runfiles ^
           --features=compiler_param_file ^
           //mediapipe/examples/desktop/hand_tracking:hand_tracking_cpu
