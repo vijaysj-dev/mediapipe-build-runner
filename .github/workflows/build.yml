@@ -10,29 +10,31 @@ jobs:
     runs-on: windows-latest
 
     steps:
-    # 1. Pull repo code onto the runner
     - name: Checkout Repository
       uses: actions/checkout@v4
 
-    # 2. Setup Python environment
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.10'
 
-    # 3. Install Bazelisk
     - name: Install Bazelisk and MSYS2
       run: |
         choco install bazelisk -y
         bazel --version
 
-    # 4. Clone Google MediaPipe
+    # Bypass the rules_swift check by putting a dummy swiftc.exe in PATH
+    - name: Bypass Swift Autoconfig
+      shell: cmd
+      run: |
+        mkdir C:\dummy_swift
+        type nul > C:\dummy_swift\swiftc.exe
+        echo C:\dummy_swift>> %GITHUB_PATH%
+
     - name: Clone MediaPipe Repo
       run: |
         git clone --depth 1 https://github.com/google-ai-edge/mediapipe.git
 
-    # 5. Compile Target with Bazel
-    # 5. Compile Target with Bazel
     - name: Build MediaPipe DLL Target
       shell: cmd
       run: |
@@ -42,12 +44,10 @@ jobs:
         
         bazel build -c opt ^
           --define MEDIAPIPE_DISABLE_GPU=1 ^
-          --action_env=BAZEL_NO_APPLE_CPP_TOOLCHAIN=1 ^
-          --define=apple.platforms=none ^
           --enable_runfiles ^
           --features=compiler_param_file ^
           //mediapipe/examples/desktop/hand_tracking:hand_tracking_cpu
-    # 6. Gather and Upload Artifacts
+
     - name: Upload Build Artifacts
       uses: actions/upload-artifact@v4
       with:
