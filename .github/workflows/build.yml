@@ -12,25 +12,25 @@ jobs:
 
     steps:
 
-      # --------------------------------------------------
-      # Checkout
-      # --------------------------------------------------
-      - name: Checkout
+      # ============================================================
+      # 1. Checkout
+      # ============================================================
+      - name: Checkout repository
         uses: actions/checkout@v4
 
 
-      # --------------------------------------------------
-      # Python
-      # --------------------------------------------------
+      # ============================================================
+      # 2. Python
+      # ============================================================
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
 
-      # --------------------------------------------------
-      # MSYS2
-      # --------------------------------------------------
+      # ============================================================
+      # 3. MSYS2
+      # ============================================================
       - name: Setup MSYS2
         uses: msys2/setup-msys2@v2
         with:
@@ -38,70 +38,146 @@ jobs:
           update: true
           install: >-
             git
+            make
             patch
-            unzip
+            diffutils
 
 
-      # --------------------------------------------------
-      # Bazelisk
-      # --------------------------------------------------
+      # ============================================================
+      # 4. Bazelisk
+      # ============================================================
       - name: Install Bazelisk
         shell: powershell
         run: |
           choco install bazelisk -y
+
+          Write-Host "Bazel version:"
           bazel --version
 
 
-      # --------------------------------------------------
-      # Clone MediaPipe
-      # --------------------------------------------------
+      # ============================================================
+      # 5. Clone MediaPipe
+      # ============================================================
       - name: Clone MediaPipe
         shell: powershell
         run: |
           git clone `
             --depth 1 `
-            --branch v0.10.21 `
             https://github.com/google-ai-edge/mediapipe.git
 
 
-      # --------------------------------------------------
-      # Disable Bzlmod
-      # --------------------------------------------------
-      - name: Disable Bzlmod
+      # ============================================================
+      # 6. Install OpenCV
+      #
+      # MediaPipe's Windows WORKSPACE expects:
+      #
+      #     C:\opencv\build
+      #
+      # ============================================================
+      - name: Install OpenCV
         shell: powershell
-        working-directory: mediapipe
         run: |
 
-          Write-Host "Creating .bazelrc.local"
+          $opencvVersion = "4.5.5"
 
-          @"
-          common --noenable_bzlmod
-          common --enable_workspace
-          "@ | Out-File `
-            -FilePath ".bazelrc.local" `
-            -Encoding ascii
+          $opencvUrl = `
+            "https://github.com/opencv/opencv/releases/download/$opencvVersion/opencv-$opencvVersion-vc14_vc15.exe"
 
+          $installer = "$env:RUNNER_TEMP\opencv-installer.exe"
 
-      # --------------------------------------------------
-      # Verify MediaPipe configuration
-      # --------------------------------------------------
-      - name: Check MediaPipe
-        shell: powershell
-        working-directory: mediapipe
-        run: |
+          Write-Host "Downloading OpenCV $opencvVersion..."
+          Write-Host $opencvUrl
 
-          Write-Host "MediaPipe commit:"
-          git rev-parse HEAD
+          Invoke-WebRequest `
+            -Uri $opencvUrl `
+            -OutFile $installer
+
+          if (-not (Test-Path $installer)) {
+            Write-Error "OpenCV installer was not downloaded."
+            exit 1
+          }
+
+          Write-Host "Installing OpenCV..."
+
+          Start-Process `
+            -FilePath $installer `
+            -ArgumentList "/silent", "/dir=C:\opencv" `
+            -Wait `
+            -NoNewWindow
 
           Write-Host ""
-          Write-Host "Bazel configuration:"
-          Get-Content .bazelrc.local
+          Write-Host "Checking C:\opencv..."
+
+          if (-not (Test-Path "C:\opencv")) {
+            Write-Error "C:\opencv does not exist."
+            exit 1
+          }
+
+          Write-Host ""
+          Write-Host "OpenCV directory:"
+          Get-ChildItem "C:\opencv"
 
 
-      # --------------------------------------------------
-      # Configure Bazel
-      # --------------------------------------------------
-      - name: Configure Bazel environment
+      # ============================================================
+      # 7. Verify OpenCV
+      # ============================================================
+      - name: Verify OpenCV
+        shell: powershell
+        run: |
+
+          Write-Host "Checking C:\opencv\build..."
+
+          if (-not (Test-Path "C:\opencv\build")) {
+            Write-Error "C:\opencv\build does not exist."
+            exit 1
+          }
+
+          Write-Host ""
+          Write-Host "OpenCV build directory:"
+          Get-ChildItem "C:\opencv\build"
+
+
+      # ============================================================
+      # 8. Locate Swift
+      #
+      # We do NOT download Swift here.
+      #
+      # If the GitHub runner already has swiftc.exe available,
+      # expose it to Bazel.
+      # ============================================================
+      - name: Locate Swift
+        shell: powershell
+        run: |
+
+          Write-Host "Searching for swiftc.exe..."
+
+          $swiftc = Get-ChildItem `
+            -Path "C:\Program Files", "C:\Program Files (x86)" `
+            -Filter "swiftc.exe" `
+            -Recurse `
+            -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+
+          if ($swiftc) {
+
+            Write-Host "Swift found:"
+            Write-Host $swiftc.FullName
+
+            echo $swiftc.Directory.FullName >> $env:GITHUB_PATH
+
+          }
+          else {
+
+            Write-Host "swiftc.exe was not found on the runner."
+            Write-Host "Continuing because the current MediaPipe configuration may not require it."
+
+          }
+
+
+      # ============================================================
+      # 9. Configure Bazel environment
+      # ============================================================
+      - name: Configure Bazel
         shell: powershell
         run: |
 
@@ -113,23 +189,95 @@ jobs:
             "C:\Program Files\Microsoft Visual Studio\2022\Community\VC"
           )
 
+          $found = $false
+
           foreach ($path in $vsPaths) {
 
             if (Test-Path $path) {
 
-              Write-Host "Using:"
+              Write-Host "Visual Studio C++ found:"
               Write-Host $path
 
               echo "BAZEL_VC=$path" >> $env:GITHUB_ENV
 
+              $found = $true
               break
+
             }
           }
 
+          if (-not $found) {
+            Write-Error "Visual Studio C++ toolchain was not found."
+            exit 1
+          }
 
-      # --------------------------------------------------
-      # Build
-      # --------------------------------------------------
+
+      # ============================================================
+      # 10. Verify complete build environment
+      # ============================================================
+      - name: Verify environment
+        shell: powershell
+        run: |
+
+          Write-Host "========================================"
+          Write-Host "Python"
+          Write-Host "========================================"
+
+          python --version
+
+
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "Bazel"
+          Write-Host "========================================"
+
+          bazel --version
+
+
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "MSYS2"
+          Write-Host "========================================"
+
+          if (-not (Test-Path "C:\msys64\usr\bin\bash.exe")) {
+            Write-Error "MSYS2 bash.exe not found."
+            exit 1
+          }
+
+          Write-Host "MSYS2 OK"
+
+
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "OpenCV"
+          Write-Host "========================================"
+
+          if (-not (Test-Path "C:\opencv\build")) {
+            Write-Error "OpenCV build directory missing."
+            exit 1
+          }
+
+          Write-Host "OpenCV OK"
+
+
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "Swift"
+          Write-Host "========================================"
+
+          where.exe swiftc
+
+          if ($LASTEXITCODE -eq 0) {
+            swiftc --version
+          }
+          else {
+            Write-Host "Swift compiler not available."
+          }
+
+
+      # ============================================================
+      # 11. Build MediaPipe
+      # ============================================================
       - name: Build Hand Tracking CPU
         shell: cmd
         working-directory: mediapipe
@@ -138,52 +286,59 @@ jobs:
           bazel build ^
             -c opt ^
             --define MEDIAPIPE_DISABLE_GPU=1 ^
-            --action_env=PYTHON_BIN_PATH=%pythonLocation%\python.exe ^
-            --shell_executable=C:\msys64\usr\bin\bash.exe ^
+            --enable_runfiles ^
+            --features=compiler_param_file ^
             --verbose_failures ^
             //mediapipe/examples/desktop/hand_tracking:hand_tracking_cpu
 
 
-      # --------------------------------------------------
-      # List output
-      # --------------------------------------------------
-      - name: List binaries
+      # ============================================================
+      # 12. Display output
+      # ============================================================
+      - name: Show build output
         shell: powershell
         run: |
 
-          Write-Host "=== EXE ==="
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "EXE FILES"
+          Write-Host "========================================"
 
           Get-ChildItem `
-            mediapipe\bazel-bin `
+            "mediapipe\bazel-bin" `
             -Recurse `
             -Filter "*.exe" `
             -ErrorAction SilentlyContinue
 
 
           Write-Host ""
-          Write-Host "=== DLL ==="
+          Write-Host "========================================"
+          Write-Host "DLL FILES"
+          Write-Host "========================================"
 
           Get-ChildItem `
-            mediapipe\bazel-bin `
+            "mediapipe\bazel-bin" `
             -Recurse `
             -Filter "*.dll" `
             -ErrorAction SilentlyContinue
 
 
           Write-Host ""
-          Write-Host "=== LIB ==="
+          Write-Host "========================================"
+          Write-Host "LIB FILES"
+          Write-Host "========================================"
 
           Get-ChildItem `
-            mediapipe\bazel-bin `
+            "mediapipe\bazel-bin" `
             -Recurse `
             -Filter "*.lib" `
             -ErrorAction SilentlyContinue
 
 
-      # --------------------------------------------------
-      # Upload
-      # --------------------------------------------------
-      - name: Upload binaries
+      # ============================================================
+      # 13. Upload artifacts
+      # ============================================================
+      - name: Upload MediaPipe binaries
         uses: actions/upload-artifact@v4
         with:
           name: mediapipe-windows-hand-tracking
