@@ -1,0 +1,52 @@
+name: Build Windows MediaPipe DLL
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+    # 1. Pull repo code onto the runner
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    # 2. Setup Python environment
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    # 3. Install Bazelisk
+    - name: Install Bazelisk and MSYS2
+      run: |
+        choco install bazelisk -y
+        bazel --version
+
+    # 4. Clone Google MediaPipe
+    - name: Clone MediaPipe Repo
+      run: |
+        git clone --depth 1 https://github.com/google-ai-edge/mediapipe.git
+
+    # 5. Compile Target with Bazel
+    - name: Build MediaPipe DLL Target
+      shell: cmd
+      run: |
+        cd mediapipe
+        set BAZEL_SH=C:\msys64\usr\bin\bash.exe
+        set BAZEL_VC=C:\Program Files\Microsoft Visual Studio\2022\Community\VC
+        bazel build -c opt --define MEDIAPIPE_DISABLE_GPU=1 //mediapipe/examples/desktop/hand_tracking:hand_tracking_cpu
+
+    # 6. Gather and Upload Artifacts
+    - name: Upload Build Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: mediapipe-windows-binaries
+        path: |
+          mediapipe/bazel-bin/**/*.dll
+          mediapipe/bazel-bin/**/*.lib
+          mediapipe/bazel-bin/**/*.exe
+        retention-days: 14
