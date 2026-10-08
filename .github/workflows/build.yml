@@ -32,14 +32,21 @@ jobs:
         git clone --depth 1 https://github.com/google-ai-edge/mediapipe.git
 
     # 5. Compile Target with Bazel
+    # 5. Compile Target with Bazel
     - name: Build MediaPipe DLL Target
       shell: cmd
       run: |
         cd mediapipe
         set BAZEL_SH=C:\msys64\usr\bin\bash.exe
         set BAZEL_VC=C:\Program Files\Microsoft Visual Studio\2022\Community\VC
-        bazel build -c opt --define MEDIAPIPE_DISABLE_GPU=1 //mediapipe/examples/desktop/hand_tracking:hand_tracking_cpu
-
+        
+        bazel build -c opt ^
+          --define MEDIAPIPE_DISABLE_GPU=1 ^
+          --action_env=BAZEL_NO_APPLE_CPP_TOOLCHAIN=1 ^
+          --define=apple.platforms=none ^
+          --enable_runfiles ^
+          --features=compiler_param_file ^
+          //mediapipe/examples/desktop/hand_tracking:hand_tracking_cpu
     # 6. Gather and Upload Artifacts
     - name: Upload Build Artifacts
       uses: actions/upload-artifact@v4
